@@ -346,7 +346,7 @@ async def acc_error(interaction: discord.Interaction, error: app_commands.AppCom
 #  VISIBILITY — HIDE OFFLINE MEMBERS
 # ─────────────────────────────────────────────
 
-ONLINE_ROLE_NAME = "🟢 Online"
+ONLINE_ROLE_NAME = "o"
 
 
 def is_online(status: discord.Status) -> bool:
