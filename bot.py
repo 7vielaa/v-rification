@@ -359,7 +359,6 @@ async def get_or_create_online_role(guild: discord.Guild) -> discord.Role:
     if role is None:
         role = await guild.create_role(
             name=ONLINE_ROLE_NAME,
-            color=discord.Color.green(),
             reason="Auto-created for online visibility system",
         )
     return role
