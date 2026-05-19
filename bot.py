@@ -12,7 +12,8 @@ ROLE_ID    = int(os.getenv("VERIFIED_ROLE_ID"))
 CHANNEL_ID = int(os.getenv("VERIFICATION_CHANNEL_ID"))
 
 intents = discord.Intents.default()
-intents.members = True
+intents.members   = True
+intents.presences = True  # Required to track online/offline status
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -339,6 +340,124 @@ async def acc_error(interaction: discord.Interaction, error: app_commands.AppCom
     await interaction.response.send_message(
         "❌ Insufficient permissions or invalid parameter.", ephemeral=True
     )
+
+
+# ─────────────────────────────────────────────
+#  VISIBILITY — HIDE OFFLINE MEMBERS
+# ─────────────────────────────────────────────
+
+ONLINE_ROLE_NAME = "🟢 Online"
+
+
+def is_online(status: discord.Status) -> bool:
+    return status not in (discord.Status.offline, discord.Status.invisible)
+
+
+async def get_or_create_online_role(guild: discord.Guild) -> discord.Role:
+    """Return the Online role, creating it if it doesn't exist."""
+    role = discord.utils.get(guild.roles, name=ONLINE_ROLE_NAME)
+    if role is None:
+        role = await guild.create_role(
+            name=ONLINE_ROLE_NAME,
+            color=discord.Color.green(),
+            reason="Auto-created for online visibility system",
+        )
+    return role
+
+
+@bot.tree.command(
+    name="setup-visibility",
+    description="Hide offline members from all channels (admins always see everyone).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_visibility(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    online_role = await get_or_create_online_role(guild)
+    admin_role  = discord.utils.get(guild.roles, permissions=discord.Permissions(administrator=True))
+
+    updated = 0
+    for channel in guild.channels:
+        # Skip the channel used for this command
+        if channel == interaction.channel:
+            continue
+        try:
+            overwrites = dict(channel.overwrites)
+
+            # Default role (@everyone): cannot view the channel
+            overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+
+            # Online role: can view
+            overwrites[online_role] = discord.PermissionOverwrite(view_channel=True)
+
+            # Bot itself: always has access
+            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+            await channel.edit(overwrites=overwrites, reason="Visibility setup: hide offline members")
+            updated += 1
+        except discord.Forbidden:
+            pass
+
+    # Give the Online role to all currently online members
+    synced = 0
+    for member in guild.members:
+        if member.bot or member.guild_permissions.administrator:
+            continue
+        if is_online(member.status) and online_role not in member.roles:
+            await member.add_roles(online_role, reason="Visibility sync on setup")
+            synced += 1
+        elif not is_online(member.status) and online_role in member.roles:
+            await member.remove_roles(online_role, reason="Visibility sync on setup")
+
+    await interaction.followup.send(
+        f"✅ Visibility configured!\n"
+        f"• **{updated}** channels updated\n"
+        f"• **{synced}** members synced\n\n"
+        f"Offline members are now hidden from all channels. Administrators can always see everyone.",
+        ephemeral=True,
+    )
+
+
+@setup_visibility.error
+async def setup_visibility_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    await interaction.response.send_message(
+        "❌ You do not have permission to use this command.", ephemeral=True
+    )
+
+
+@bot.event
+async def on_presence_update(before: discord.Member, after: discord.Member):
+    """Add/remove the Online role when a member's status changes."""
+    # Skip bots and admins (admins always see everything via their permissions)
+    if after.bot or after.guild_permissions.administrator:
+        return
+
+    online_role = discord.utils.get(after.guild.roles, name=ONLINE_ROLE_NAME)
+    if online_role is None:
+        return  # Visibility system not set up yet
+
+    was_online = is_online(before.status)
+    now_online  = is_online(after.status)
+
+    if not was_online and now_online:
+        # Member came online → give role
+        if online_role not in after.roles:
+            await after.add_roles(online_role, reason="Member came online")
+
+    elif was_online and not now_online:
+        # Member went offline → remove role
+        if online_role in after.roles:
+            await after.remove_roles(online_role, reason="Member went offline")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Give the Online role immediately if the new member is online."""
+    if member.bot or member.guild_permissions.administrator:
+        return
+    online_role = discord.utils.get(member.guild.roles, name=ONLINE_ROLE_NAME)
+    if online_role and is_online(member.status):
+        await member.add_roles(online_role, reason="New member joined online")
 
 
 # ─────────────────────────────────────────────
